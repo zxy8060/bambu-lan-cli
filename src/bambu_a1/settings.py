@@ -4,10 +4,11 @@ import json
 import os
 from pathlib import Path
 import re
+import uuid
 
 
 def data_directory():
-    override = os.environ.get("BAMBU_A1_HOME")
+    override = os.environ.get("BAMBU_LAN_HOME") or os.environ.get("BAMBU_A1_HOME")
     if override:
         return Path(override).expanduser().resolve()
     if os.name == "nt":
@@ -49,7 +50,7 @@ def validate_config(cfg):
 
 def config():
     if not CONFIG.exists():
-        raise ValueError("Configuration missing; run bambu-a1 init --help")
+        raise ValueError("Configuration missing; run bambu-lan init --help")
     return validate_config(json.loads(CONFIG.read_text(encoding="utf-8-sig")))
 
 
@@ -79,7 +80,29 @@ def initialize(
         if value:
             cfg[field] = str(Path(value).expanduser().resolve())
     validate_config(cfg)
+    if profile:
+        from .machine import target
+
+        target(cfg)
     DATA.mkdir(parents=True, exist_ok=True)
     with CONFIG.open("x", encoding="utf-8") as stream:
         json.dump(cfg, stream, indent=2)
     return {"state": "configured", "config_file": str(CONFIG), "print_started": False}
+
+
+def configure_machine(profile):
+    from .machine import target
+
+    cfg = config()
+    cfg["machine_profile"] = str(Path(profile).expanduser().resolve())
+    selected = target(cfg)
+    temporary = CONFIG.with_name("config-" + uuid.uuid4().hex + ".tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as stream:
+            json.dump(cfg, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, CONFIG)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return {"state": "machine_configured", "machine": selected, "print_started": False}

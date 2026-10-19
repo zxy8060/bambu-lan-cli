@@ -13,7 +13,7 @@ This repository provides an **import interface**, not credential issuance or ext
 Provide the certificate chain in PEM format, application leaf first, followed by intermediates. The application CA root comes from `app_ca_file` (defaults to `ca_file`). Provide your existing private key via a local path outside the repository. For encrypted PEM, request an interactive password prompt; there is no password argument.
 
 ```powershell
-bambu-a1 credential-import --certificate C:/private/app-chain.pem --private-key C:/private/app-key.pem --password-prompt
+bambu-lan credential-import --certificate C:/private/app-chain.pem --private-key C:/private/app-key.pem --password-prompt
 ```
 
 Omit `--password-prompt` only for a key that is already unencrypted. The import verifies validity dates, certificate issuer signatures up to the configured root, CA constraints, key pairing and the target printer's current application trust list. It does not upload certificates or change the printer's trust. An untrusted identity fails.

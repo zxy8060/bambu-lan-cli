@@ -1,3 +1,3 @@
-"""Bambu A1 CLI, an independent experimental project."""
+"""Bambu LAN CLI; legacy Python package name retained for compatibility."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

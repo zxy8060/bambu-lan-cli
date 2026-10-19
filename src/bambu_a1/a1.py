@@ -1,9 +1,8 @@
-"""A1 Windows CLI: slice, inspect, verified LAN monitoring and signed print dispatch."""
+"""Bambu LAN CLI: profile-driven slicing, monitoring and reviewed signed dispatch."""
 
 import argparse
 import hashlib
 import json
-import math
 import pathlib
 import re
 import subprocess
@@ -11,6 +10,7 @@ import tempfile
 import time
 import zipfile
 from .lan import DATA, config, status, camera
+from . import machine, filament
 
 
 def ensure(condition, message):
@@ -45,40 +45,23 @@ def inspect(path):
         gcode = archive.read(gcodes[0])
         expected = archive.read(gcodes[0] + ".md5").decode().strip().lower()
         ensure(hashlib.md5(gcode).hexdigest() == expected, "G-code checksum mismatch")
+    geometry = machine.from_profile(settings)
     ensure(
-        settings.get("printer_model") == "Bambu Lab A1",
-        "File must be sliced for Bambu Lab A1",
-    )
-    ensure(
-        settings.get("nozzle_diameter") == ["0.4"],
-        "This helper is verified for a single 0.4 mm nozzle",
-    )
-    ensure(
-        abs(float(metadata.get("nozzle_diameter", 0)) - 0.4) < 0.001,
+        machine.finite_number(metadata.get("nozzle_diameter")) == geometry["nozzle_mm"],
         "Plate nozzle mismatch",
     )
-    ensure(
-        settings.get("printable_area") == ["0x0", "256x0", "256x256", "0x256"],
-        "Unexpected build plate area",
-    )
-    ensure(float(settings.get("printable_height", 0)) == 256, "Unexpected build height")
     bbox = metadata.get("bbox_all", [])
-    ensure(
-        len(bbox) == 4
-        and all(
-            isinstance(v, (float, int)) and math.isfinite(v) and 0 <= v <= 256
-            for v in bbox
-        ),
-        "Model XY bounds exceed A1 plate or are missing",
-    )
-    ensure(bbox[0] < bbox[2] and bbox[1] < bbox[3], "Empty or reversed model bounds")
     ensure(
         not metadata.get("is_seq_print", False),
         "This workflow uses by-layer printing; review sequential printing separately",
     )
     materials = settings.get("filament_type", [])
     ensure(
-        len(materials) == 1 and metadata.get("filament_ids") == [0],
+        isinstance(materials, list)
+        and len(materials) == 1
+        and isinstance(materials[0], str)
+        and bool(materials[0].strip())
+        and metadata.get("filament_ids") == [0],
         "Helper currently supports one material per plate",
     )
     body = gcode.decode("utf-8")
@@ -96,7 +79,11 @@ def inspect(path):
         value(r"^; printer_model = (.+)$") == settings["printer_model"],
         "G-code and project model disagree",
     )
-    ensure(float(value(r"^; nozzle_diameter = (.+)$")) == 0.4, "G-code nozzle mismatch")
+    ensure(
+        machine.finite_number(value(r"^; nozzle_diameter = (.+)$"))
+        == geometry["nozzle_mm"],
+        "G-code nozzle mismatch",
+    )
     ensure(
         value(r"^; filament_type = (.+)$") == materials[0], "G-code material mismatch"
     )
@@ -104,14 +91,18 @@ def inspect(path):
         value(r"^; curr_bed_type = (.+)$") == settings.get("curr_bed_type"),
         "G-code plate type mismatch",
     )
-    max_z = float(value(r"^; max_z_height: (.+)$"))
-    ensure(0 < max_z <= 256, "Model Z exceeds A1 height")
+    max_z = machine.finite_number(value(r"^; max_z_height: (.+)$"))
+    ensure(
+        machine.contains(geometry, bbox, max_z),
+        "Model bounds exceed the profile build volume or are empty",
+    )
     return {
         "file": str(path),
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "validated": True,
         "printer": settings["printer_model"],
-        "nozzle_mm": 0.4,
+        "nozzle_mm": geometry["nozzle_mm"],
+        "machine": geometry,
         "material": materials[0],
         "colors": settings.get("filament_colour", []),
         "filament_profile": settings.get("filament_settings_id", []),
@@ -128,14 +119,21 @@ def inspect(path):
     }
 
 
-def preflight(file, slot):
-    job, live = inspect(file), status()
+def preflight(file, slot=None, ams_id=0, external=False):
+    routing = filament.route(slot, ams_id, external)
+    cfg = config()
+    target = machine.target(cfg)
+    job, live = inspect(file), status(cfg)
     state, failures, warnings = live["status"], [], []
 
     def check(ok, message):
         if not ok:
             failures.append(message)
 
+    check(
+        job["machine"] == target,
+        "Sliced model/nozzle/build volume differs from the configured target machine",
+    )
     check(
         state.get("gcode_state") in ["IDLE", "FINISH"], "Printer is not confirmed idle"
     )
@@ -148,36 +146,36 @@ def preflight(file, slot):
         "HMS messages require review or HMS status is missing",
     )
     check(state.get("sdcard") is True, "SD card not confirmed present")
+    try:
+        installed_nozzle = machine.finite_number(state.get("nozzle_diameter"))
+    except ValueError:
+        installed_nozzle = None
     check(
-        str(state.get("nozzle_diameter")) == "0.4",
-        "Installed nozzle is not confirmed 0.4 mm",
+        installed_nozzle == job["nozzle_mm"],
+        "Installed nozzle is missing or differs from the sliced nozzle",
     )
-    check(state.get("ams_status") == 0, "AMS is not confirmed idle")
+    if routing["use_ams"]:
+        check(state.get("ams_status") == 0, "AMS is not confirmed idle")
+    elif "ams_status" in state:
+        check(state["ams_status"] == 0, "Feeding system is not idle")
     check(
         state.get("nozzle_target_temper") == 0 and state.get("bed_target_temper") == 0,
         "Printer currently has heating targets or temperatures are missing",
     )
-    check(1 <= slot <= 4, "AMS Lite slot must be 1 through 4")
-    tray = next(
-        (
-            t
-            for u in state.get("ams", {}).get("units", [])
-            if str(u.get("id")) == "0"
-            for t in u.get("trays", [])
-            if str(t.get("id")) == str(slot - 1)
-        ),
-        None,
+    tray = filament.selected_tray(state, routing)
+    check(
+        tray is not None,
+        "Selected AMS/external tray was not returned; configure its material on the printer",
     )
-    check(tray is not None, "Requested AMS slot was not returned")
     if tray:
         check(
             tray.get("tray_type") == job["material"],
-            "AMS material differs from the sliced material",
+            "Selected tray material differs from the sliced material",
         )
         expected_color = (job["colors"] or [""])[0].lstrip("#").upper()[:6]
         if expected_color and tray.get("tray_color", "").upper()[:6] != expected_color:
             warnings.append(
-                "AMS color differs from the sliced project; confirm desired color"
+                "Selected tray color differs from the sliced project; confirm desired color"
             )
         warnings.append(
             "Remaining spool mass is not reliably measured; check sufficient filament"
@@ -190,8 +188,12 @@ def preflight(file, slot):
     return {
         "checks_passed": not failures,
         "file": job,
+        "target_machine": target,
+        "target_serial": cfg["serial"],
+        "target_identity_source": "operator-configured profile; TLS authenticates the configured serial",
         "ams_slot": slot,
-        "ams_zero_based_mapping": [slot - 1],
+        "ams_zero_based_mapping": routing["ams_mapping"],
+        "routing": routing,
         "selected_tray": tray,
         "failures": failures,
         "warnings": warnings,
@@ -199,7 +201,7 @@ def preflight(file, slot):
         "print_started": False,
         "automatic_send_available": (DATA / "app-credential.dpapi").exists(),
         "send_route": "signed_lan_windows",
-        "send_scope": "Verified A1/0.4/PLA single plate; prepare + reviewed image + dispatch",
+        "send_scope": "Experimental Bambu signed LAN; single nozzle/material/plate, profile matched, reviewed image required",
     }
 
 
@@ -229,11 +231,7 @@ def slice_model(model, output, profile=None, overrides=None):
             encoding="utf-8-sig"
         )
     )
-    ensure(
-        settings.get("printer_model") == "Bambu Lab A1"
-        and settings.get("nozzle_diameter") == ["0.4"],
-        "Profile must target A1 0.4",
-    )
+    machine.from_profile(settings)
     ensure(
         bool(settings.get("machine_start_gcode"))
         and bool(settings.get("machine_end_gcode")),
@@ -303,6 +301,19 @@ def slice_model(model, output, profile=None, overrides=None):
     return result
 
 
+def add_filament_arguments(cmd):
+    source = cmd.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--slot", type=int, help="1-based slot in the selected AMS unit"
+    )
+    source.add_argument(
+        "--external", action="store_true", help="Use the configured external spool"
+    )
+    cmd.add_argument(
+        "--ams-id", type=int, default=0, help="AMS unit ID from status (default 0)"
+    )
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -317,6 +328,11 @@ def main(argv=None):
     cmd.add_argument("--studio-exe")
     cmd.add_argument("--profile")
     cmd.add_argument("--access-code-env", default="BAMBU_A1_ACCESS_CODE")
+    cmd = commands.add_parser(
+        "configure-machine",
+        help="Select the target machine profile; no printer commands",
+    )
+    cmd.add_argument("--profile", required=True)
     cmd = commands.add_parser(
         "credential-import",
         help="Import your authorized, already trusted application identity on Windows",
@@ -340,15 +356,25 @@ def main(argv=None):
     cmd.add_argument("--overrides")
     cmd = commands.add_parser("preflight")
     cmd.add_argument("--file", required=True)
-    cmd.add_argument("--slot", required=True, type=int)
+    add_filament_arguments(cmd)
     cmd.add_argument("--out")
     cmd = commands.add_parser("monitor")
     cmd.add_argument("--seconds", type=int, default=45)
     cmd.add_argument("--interval", type=int, default=10)
     cmd = commands.add_parser("prepare-print")
     cmd.add_argument("--file", required=True)
-    cmd.add_argument("--slot", required=True, type=int)
+    add_filament_arguments(cmd)
     cmd.add_argument("--label")
+    cmd.add_argument(
+        "--bed-image",
+        help="Fresh JPEG of this printer's bed if built-in camera transport is unavailable",
+    )
+    cmd.add_argument(
+        "--flow-calibration",
+        action="store_true",
+        help="Enable only for a supported machine/material combination",
+    )
+    cmd.add_argument("--vibration-calibration", action="store_true")
     cmd = commands.add_parser("dispatch")
     cmd.add_argument("--job-id", required=True)
     cmd.add_argument("--reviewed-bed-sha256", required=True)
@@ -368,6 +394,10 @@ def main(argv=None):
             args.profile,
             args.access_code_env,
         )
+    elif args.command == "configure-machine":
+        from .settings import configure_machine
+
+        result = configure_machine(args.profile)
     elif args.command == "credential-import":
         import getpass
         from .app_credentials import import_files
@@ -385,14 +415,23 @@ def main(argv=None):
     elif args.command == "slice":
         result = slice_model(args.model, args.out, args.profile, args.overrides)
     elif args.command == "preflight":
-        result = preflight(args.file, args.slot)
+        result = preflight(args.file, args.slot, args.ams_id, args.external)
         if args.out:
             write_json(args.out, result)
     elif args.command in {"prepare-print", "dispatch", "job-status"}:
         from . import a1_print
 
         if args.command == "prepare-print":
-            result = a1_print.prepare(args.file, args.slot, args.label)
+            result = a1_print.prepare(
+                args.file,
+                args.slot,
+                args.label,
+                ams_id=args.ams_id,
+                external=args.external,
+                bed_image=args.bed_image,
+                flow_calibration=args.flow_calibration,
+                vibration_calibration=args.vibration_calibration,
+            )
         elif args.command == "dispatch":
             result = a1_print.dispatch(args.job_id, args.reviewed_bed_sha256)
         else:

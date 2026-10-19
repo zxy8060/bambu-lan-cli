@@ -24,7 +24,7 @@ class DispatchGuards(unittest.TestCase):
         self.bed = self.folder / "bed.jpg"
         self.bed.write_bytes(b"offline image identity")
         self.manifest = {
-            "format": 1,
+            "format": 2,
             "job_id": self.job,
             "target_serial": "offline-A1",
             "file": str(self.model),
@@ -32,6 +32,7 @@ class DispatchGuards(unittest.TestCase):
             "bed_file": str(self.bed),
             "bed_sha256": hashlib.sha256(self.bed.read_bytes()).hexdigest(),
             "prepared_at": time.time(),
+            "bed_captured_at": time.time(),
             "slot": 2,
         }
         self.save()
@@ -67,6 +68,27 @@ class DispatchGuards(unittest.TestCase):
 
     def test_wrong_device_blocks(self):
         self.manifest["target_serial"] = "another-device"
+        self.save()
+        with self.assertRaises(ValueError):
+            self.dispatch()
+
+    def test_legacy_manifest_requires_new_preparation(self):
+        self.manifest["format"] = 1
+        self.save()
+        with self.assertRaisesRegex(ValueError, "prepared again"):
+            self.dispatch()
+
+    def test_legacy_receipt_can_still_be_inspected(self):
+        self.manifest["format"] = 1
+        self.save()
+        (self.folder / "receipt.json").write_text('{"state":"historical"}')
+        with patch.object(p.lan, "status", return_value={"status": {}}):
+            result = p.job_status(self.job)
+        self.assertEqual(result["receipt"]["state"], "historical")
+        self.assertFalse(result["active"])
+
+    def test_new_preparation_does_not_refresh_old_photo(self):
+        self.manifest["bed_captured_at"] -= 301
         self.save()
         with self.assertRaises(ValueError):
             self.dispatch()

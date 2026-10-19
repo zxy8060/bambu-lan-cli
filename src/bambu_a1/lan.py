@@ -130,12 +130,20 @@ def sanitize(state):
             )
         except ValueError:
             safe["mqtt_signature_required"] = None
-    if isinstance(state.get("vt_tray"), dict):
-        safe["vt_tray"] = {
+
+    def clean_tray(tray):
+        return {
             k: v
-            for k, v in state["vt_tray"].items()
+            for k, v in tray.items()
             if k in ["id", "tray_type", "tray_color", "tray_info_idx"]
         }
+
+    if isinstance(state.get("vt_tray"), dict):
+        safe["vt_tray"] = clean_tray(state["vt_tray"])
+    elif isinstance(state.get("vt_tray"), list):
+        safe["vt_tray"] = [
+            clean_tray(tray) for tray in state["vt_tray"] if isinstance(tray, dict)
+        ]
     if isinstance(state.get("ams"), dict):
         ams = state["ams"]
         safe["ams"] = {
@@ -261,13 +269,13 @@ class Connection:
         self.sock.close()
 
 
-def status():
-    with Connection() as connection:
+def status(cfg=None):
+    with Connection(cfg) as connection:
         return connection.read()
 
 
-def camera(destination):
-    cfg = config()
+def camera(destination, cfg=None):
+    cfg = cfg or config()
     _, code = credentials(cfg)
     with tls_socket(cfg, 6000) as sock:
         sock.settimeout(12)

@@ -1,4 +1,4 @@
-"""Verified single-plate A1/0.4/PLA print workflow, Windows CLI only.
+"""Reviewed single-nozzle/material Bambu print workflow, Windows CLI only.
 
 prepare captures current checks and camera without printing. The caller must
 actually inspect that image, then dispatch with its SHA256 under the user's
@@ -30,6 +30,7 @@ from .signed_lan import (
     encrypt_field,
 )
 from .verified_ftps import VerifiedFTPS
+from .filament import calibration_flags
 
 JOBS = lan.DATA / "print-jobs"
 
@@ -85,33 +86,51 @@ def allocate_sequence():
             msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
 
 
-def prepare(file, slot, label=None):
+def prepare(
+    file,
+    slot=None,
+    label=None,
+    *,
+    ams_id=0,
+    external=False,
+    bed_image=None,
+    flow_calibration=False,
+    vibration_calibration=False,
+):
     require_windows()
-    check = a1.preflight(file, slot)
+    check = a1.preflight(file, slot, ams_id, external)
     if not check["checks_passed"]:
         return {"state": "preflight_failed", "preflight": check, "print_started": False}
-    if check["file"]["material"] != "PLA":
-        raise ValueError("Automatic dispatch currently verified for PLA only")
     cfg = lan.config()
+    if cfg["serial"] != check["target_serial"]:
+        raise ValueError("Configured printer changed during preparation")
     vault.load(cfg["serial"])
     job_id = uuid.uuid4().hex
     folder = JOBS / job_id
     folder.mkdir(parents=True, exist_ok=False)
     bed = folder / "bed.jpg"
-    picture = lan.camera(bed)
-    task = (label or "A1 CLI " + Path(file).stem)[:100]
+    picture, captured_at = capture_bed(bed, bed_image, cfg)
+    task = (label or "Bambu LAN " + Path(file).stem)[:100]
     if not task or any(ord(c) < 32 for c in task):
         raise ValueError("Invalid task label")
     manifest = {
-        "format": 1,
+        "format": 2,
         "job_id": job_id,
         "target_serial": cfg["serial"],
         "file": str(Path(file).resolve()),
         "sha256": check["file"]["sha256"],
         "slot": slot,
+        "ams_id": ams_id,
+        "external": external,
+        "routing": check["routing"],
+        "target_machine": check["target_machine"],
+        "calibration": calibration_flags(
+            check["target_machine"]["model"], flow_calibration, vibration_calibration
+        ),
         "tray": check["selected_tray"],
         "task_name": task,
         "prepared_at": time.time(),
+        "bed_captured_at": captured_at,
         "bed_file": str(bed),
         "bed_sha256": digest(bed.read_bytes()),
         "preflight": check,
@@ -122,11 +141,60 @@ def prepare(file, slot, label=None):
         "job_id": job_id,
         "file": check["file"],
         "ams_slot": slot,
+        "routing": manifest["routing"],
+        "calibration": manifest["calibration"],
         "selected_tray": check["selected_tray"],
         "camera": picture,
         "bed_sha256": manifest["bed_sha256"],
         "print_started": False,
     }
+
+
+def capture_bed(destination, supplied=None, cfg=None):
+    if supplied is None:
+        picture = lan.camera(destination, cfg)
+        return picture, time.time()
+    source = Path(supplied).resolve()
+    with source.open("rb") as stream:
+        stat = os.fstat(stream.fileno())
+        if not 4 <= stat.st_size <= 10_000_000:
+            raise ValueError("Bed JPEG must be between 4 bytes and 10 MB")
+        if not 0 <= time.time() - stat.st_mtime <= 300:
+            raise ValueError("Bed image must be freshly captured within 5 minutes")
+        jpeg = stream.read()
+    if not jpeg.startswith(b"\xff\xd8") or not jpeg.endswith(b"\xff\xd9"):
+        raise ValueError("Bed image must be a JPEG")
+    destination.write_bytes(jpeg)
+    return {
+        "file": str(destination),
+        "bytes": len(jpeg),
+        "source": "operator-supplied",
+        "capture_time_source": "file mtime",
+        "requires_review": "Confirm this is a fresh photo of the configured printer",
+    }, stat.st_mtime
+
+
+def fresh_preflight(manifest):
+    check = a1.preflight(
+        manifest["file"], manifest["slot"], manifest["ams_id"], manifest["external"]
+    )
+    if check["checks_passed"] and (
+        check["target_machine"] != manifest["target_machine"]
+        or check["routing"] != manifest["routing"]
+        or check["target_serial"] != manifest["target_serial"]
+    ):
+        raise ValueError(
+            "Target machine or filament routing changed after review; prepare again"
+        )
+    return check
+
+
+def review_is_fresh(manifest):
+    now = time.time()
+    return all(
+        0 <= now - manifest[field] <= 300
+        for field in ("prepared_at", "bed_captured_at")
+    )
 
 
 def get_job(job_id):
@@ -135,11 +203,11 @@ def get_job(job_id):
     folder = JOBS / job_id
     manifest = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))
     if (
-        manifest.get("format") != 1
+        manifest.get("format") not in (1, 2)
         or manifest.get("job_id") != job_id
         or manifest.get("target_serial") != lan.config()["serial"]
     ):
-        raise ValueError("Local manifest target mismatch")
+        raise ValueError("Local manifest target/format mismatch")
     return folder, manifest
 
 
@@ -182,20 +250,22 @@ def _dispatch(job_id, reviewed_bed_sha256):
         raise RuntimeError(
             "Receipt exists: inspect job-status and printer; no automatic resend"
         )
+    if m["format"] != 2:
+        raise ValueError("Version 0.1 jobs must be prepared again")
     if (
         reviewed_bed_sha256 != m["bed_sha256"]
         or digest(Path(m["bed_file"]).read_bytes()) != reviewed_bed_sha256
     ):
         raise ValueError("Reviewed camera frame does not match the prepared job")
-    if not 0 <= time.time() - m["prepared_at"] <= 300:
+    if not review_is_fresh(m):
         raise ValueError(
             "Preparation is older than 5 minutes; prepare and view a fresh image"
         )
     content = Path(m["file"]).read_bytes()
     if digest(content) != m["sha256"]:
         raise ValueError("Prepared print file changed")
-    check = a1.preflight(m["file"], m["slot"])
-    if not check["checks_passed"] or check["file"]["material"] != "PLA":
+    check = fresh_preflight(m)
+    if not check["checks_passed"]:
         return {
             "state": "fresh_preflight_failed",
             "preflight": check,
@@ -203,8 +273,10 @@ def _dispatch(job_id, reviewed_bed_sha256):
         }
     for field in ("id", "tray_type", "tray_color", "tray_info_idx"):
         if check["selected_tray"].get(field) != m["tray"].get(field):
-            raise ValueError("AMS selection changed after review")
+            raise ValueError("Selected filament changed after review")
     cfg = lan.config()
+    if cfg["serial"] != m["target_serial"]:
+        raise ValueError("Configured printer changed after review")
     serial, access = lan.credentials(cfg)
     cert, key, data = vault.load(serial)
     remote = "a1cli_" + job_id + ".gcode.3mf"
@@ -215,7 +287,7 @@ def _dispatch(job_id, reviewed_bed_sha256):
         ftp.upload_new(remote, content)
         if ftp.readback(remote, len(content)) != content:
             raise ValueError("Uploaded bytes differ from reviewed file")
-    check = a1.preflight(m["file"], m["slot"])
+    check = fresh_preflight(m)
     if not check["checks_passed"] or any(
         check["selected_tray"].get(field) != m["tray"].get(field)
         for field in ("id", "tray_type", "tray_color", "tray_info_idx")
@@ -225,7 +297,7 @@ def _dispatch(job_id, reviewed_bed_sha256):
             "preflight": check,
             "print_started": False,
         }
-    if time.time() - m["prepared_at"] > 300:
+    if not review_is_fresh(m):
         raise ValueError("Bed review expired during upload; no print was sent")
     # No print dispatch has happened yet. Capture and retain a receipt even if
     # connection/provisioning later fails; the operator can inspect the outcome.
@@ -236,6 +308,9 @@ def _dispatch(job_id, reviewed_bed_sha256):
         "remote_filename": remote,
         "task_name": m["task_name"],
         "ams_slot": m["slot"],
+        "routing": m["routing"],
+        "target_machine": m["target_machine"],
+        "calibration": m["calibration"],
         "state": "uploaded_not_dispatched",
         "print_started": False,
         "remote_readback_verified": True,
@@ -262,13 +337,10 @@ def _dispatch(job_id, reviewed_bed_sha256):
                 "md5": hashlib.md5(content).hexdigest(),
                 "bed_type": "auto",
                 "timelapse": False,
-                "bed_leveling": True,
-                "flow_cali": True,
-                "vibration_cali": True,
-                "layer_inspect": False,
-                "use_ams": True,
-                "ams_mapping": [m["slot"] - 1],
-                "ams_mapping2": [{"ams_id": 0, "slot_id": m["slot"] - 1}],
+                **m["calibration"],
+                "use_ams": m["routing"]["use_ams"],
+                "ams_mapping": m["routing"]["ams_mapping"],
+                "ams_mapping2": m["routing"]["ams_mapping2"],
                 "subtask_name": m["task_name"],
                 "profile_id": "0",
                 "project_id": "0",
@@ -286,6 +358,8 @@ def _dispatch(job_id, reviewed_bed_sha256):
                 print_started=None,
             )
             write(receipt, record)
+            if not review_is_fresh(m):
+                raise ValueError("Bed review expired before publish; no print was sent")
             publish(conn, wire)
             record["state"] = "sent_pending_independent_verification"
             write(receipt, record)
@@ -316,7 +390,7 @@ def _dispatch(job_id, reviewed_bed_sha256):
                     )
                     write(receipt, record)
                     break
-        live = lan.status()
+        live = lan.status(cfg)
         state = live["status"]
         record["live"] = live
         matching = matches_remote_job(state, remote)
@@ -339,13 +413,16 @@ def _dispatch(job_id, reviewed_bed_sha256):
 
 def job_status(job_id):
     folder, m = get_job(job_id)
+    cfg = lan.config()
+    if cfg["serial"] != m["target_serial"]:
+        raise ValueError("Configured printer changed during status read")
     receipt = folder / "receipt.json"
     record = (
         json.loads(receipt.read_text(encoding="utf-8"))
         if receipt.exists()
         else {"state": "prepared_only"}
     )
-    live = lan.status()
+    live = lan.status(cfg)
     state = live["status"]
     matches = matches_remote_job(state, record.get("remote_filename"))
     result = {

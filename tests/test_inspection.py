@@ -85,3 +85,55 @@ class InspectionTests(unittest.TestCase):
         self.write(extra_plate=True)
         with self.assertRaises(ValueError):
             inspect(self.path)
+
+    def change_printer(self, model, nozzle, size, material):
+        self.settings.update(
+            printer_model=model,
+            nozzle_diameter=[str(nozzle)],
+            printable_area=["0x0", f"{size}x0", f"{size}x{size}", f"0x{size}"],
+            printable_height=str(size),
+            filament_type=[material],
+        )
+        self.metadata["nozzle_diameter"] = nozzle
+        self.gcode = self.gcode.replace(b"Bambu Lab A1", model.encode())
+        self.gcode = self.gcode.replace(
+            b"nozzle_diameter = 0.4", f"nozzle_diameter = {nozzle}".encode()
+        )
+        self.gcode = self.gcode.replace(
+            b"filament_type = PLA", f"filament_type = {material}".encode()
+        )
+
+    def test_a1_mini_uses_180_mm_build_volume(self):
+        self.change_printer("Bambu Lab A1 mini", 0.6, 180, "PETG")
+        self.write()
+        result = inspect(self.path)
+        self.assertEqual(result["nozzle_mm"], 0.6)
+        self.assertEqual(result["machine"]["height_mm"], 180)
+        self.assertEqual(result["material"], "PETG")
+        self.metadata["bbox_all"] = [170, 100, 181, 110]
+        self.write()
+        with self.assertRaises(ValueError):
+            inspect(self.path)
+
+    def test_p1s_accepts_asa_profile(self):
+        self.change_printer("Bambu Lab P1S", 0.8, 256, "ASA")
+        self.write()
+        self.assertEqual(inspect(self.path)["material"], "ASA")
+
+    def test_dual_nozzle_profile_is_not_silently_treated_as_single(self):
+        self.settings["nozzle_diameter"] = ["0.4", "0.4"]
+        self.write()
+        with self.assertRaisesRegex(ValueError, "single-nozzle"):
+            inspect(self.path)
+
+    def test_plate_nozzle_must_match_profile(self):
+        self.metadata["nozzle_diameter"] = 0.6
+        self.write()
+        with self.assertRaisesRegex(ValueError, "Plate nozzle"):
+            inspect(self.path)
+
+    def test_empty_material_is_not_accepted(self):
+        self.settings["filament_type"] = [""]
+        self.write()
+        with self.assertRaises(ValueError):
+            inspect(self.path)

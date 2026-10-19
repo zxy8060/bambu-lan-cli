@@ -13,6 +13,7 @@ Protocol sources consulted include:
 - greghesp/ha-bambulab: https://github.com/greghesp/ha-bambulab
 - Aptimex/bambu-mqtt-generator: https://github.com/Aptimex/bambu-mqtt-generator
 - bambulab/BambuStudio: https://github.com/bambulab/BambuStudio
+- synman/bambu-printer-manager: https://github.com/synman/bambu-printer-manager (filament mapping and calibration field interoperability)
 
 These source trees are not vendored. The distribution contains no Bambu Studio or network-plugin binaries, vendor private keys, public CA bundle, copied firmware, complete slicer profiles or user print models. Bambu Studio is an optional separately installed executable. Python's cryptography library is an external dependency under its own license.
 
