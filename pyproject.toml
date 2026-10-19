@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bambu-a1-cli"
+version = "0.1.0"
+description = "Experimental A1 CLI: inspect, slice, monitor and dispatch reviewed signed LAN jobs"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE", "NOTICE.md"]
+authors = [{name = "zxy8060"}]
+dependencies = ["cryptography>=43"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Operating System :: Microsoft :: Windows",
+]
+
+[project.scripts]
+bambu-a1 = "bambu_a1.a1:entrypoint"
+
+[project.urls]
+Repository = "https://github.com/zxy8060/bambu-a1-cli"
+Issues = "https://github.com/zxy8060/bambu-a1-cli/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,11 @@
+{
+  "format": 1,
+  "host": "192.0.2.10",
+  "serial": "YOURPRINTERSERIAL",
+  "ca_file": "C:/private/printer-ca.pem",
+  "app_ca_file": "C:/private/app-ca.pem",
+  "access_code_env": "BAMBU_A1_ACCESS_CODE",
+  "studio_config": "C:/path/to/BambuStudio.conf",
+  "studio_exe": "C:/Program Files/Bambu Studio/bambu-studio.exe",
+  "default_profile": "C:/private/a1-full-profile.json"
+}
