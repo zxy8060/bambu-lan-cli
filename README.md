@@ -1,31 +1,23 @@
 # Bambu LAN CLI
 
-[简体中文](README.zh-CN.md)
+[English](README.en.md)
 
-An independent, experimental Python CLI for profile-driven Bambu slicing, LAN monitoring and reviewed signed print dispatch. Model, nozzle diameter and build volume come from a resolved machine profile. There is no PLA-only material restriction. Existing cloud and Handy settings are left unchanged. No desktop automation or WSL is used.
+独立、实验性的拓竹命令行工作流：根据机器配置检查切片、调用本机 Studio CLI 切片、读取局域网状态、检查后单次签名开打。型号、喷嘴与打印尺寸来自配置，材料不再限制为 PLA。保持原有云端与 Handy 设置，不使用窗口控制或 WSL。
 
-**Signing credentials are not included or extracted by this project.** Signed dispatch requires an authorized RSA application identity that the printer already trusts. Installing this repository alone does not enable signed printing. See [credential requirements](docs/credentials.md).
+**仓库不包含应用私钥，也不提供从官方插件提取凭据的工具。** 签名开打需要使用者自行提供有权使用、且已被目标打印机信任的应用签名身份。仅安装项目不能完成凭据初始化。没有这类凭据时，仍可使用文件检查、切片、状态和相机功能。详见 [凭据说明](docs/credentials.md)。
 
-## Scope
+## 当前范围
 
-| Feature | Support |
-| --- | --- |
-| Inspect a sliced `.gcode.3mf` | Single plate, single material, single nozzle, rectangular build volume from profile, by-layer |
-| Slice STL | Installed Bambu Studio CLI and a complete resolved profile required |
-| LAN status | Verified TLS, pinned printer serial and operator-supplied CA bundle; required telemetry must be present |
-| Camera | TLS JPEG transport (A1/P1); fresh operator-supplied JPEG alternative; built-in RTSPS capture not implemented |
-| Signed dispatch | Windows, matching machine profile and live nozzle/material, trusted signing identity, compatible firmware |
-| Filament source | Explicit AMS unit/slot, AMS HT single slot, or external spool; one material per job |
-| Materials | No whitelist: PETG, ABS, ASA, TPU, etc. require an appropriate machine/filament profile and feed path |
-| Other operating systems | Offline inspection/tests supported; no portable credential store or signed dispatcher yet |
-| Cloud sending / multi-host scheduler | Not implemented |
-| Dual-nozzle / multicolor / mixed AMS routing | Not implemented; dual-nozzle profiles and multi-material plates are rejected |
+- Python 3.11+；完整签名发送流程目前仅支持 Windows。
+- 单喷嘴、单盘单材料、按层打印；矩形打印范围与高度、喷嘴直径、型号均从配置读取。
+- 材料无白名单限制，保留切片材料与实际槽位材料一致的检查；温度沿用相应切片配置。
+- 支持指定 AMS 单元和槽位、AMS HT 单槽、外置料架。双喷嘴、多色、混合 AMS 路由尚未实现。
+- 内置相机为 A1/P1 使用的 TLS JPEG 路径；其他相机可提供新拍的 JPEG，尚未实现内置 RTSPS 抓图。
+- 不包含云端发送、跨机器任务队列。
+- Linux/macOS 可运行离线检查等可移植部分，凭据存储及发送尚未适配。
+- 原始私有原型已在 A1 固件 01.08.01.00、Studio 02.08.02.61、0.4 mm、PLA 上真实启动打印。公开重构版及新增通用路径通过离线测试，其他机型和材料未进行实机认证；缺少所需设备状态或签名协议不兼容时会停止。
 
-The originating private prototype started a real A1 print on firmware **01.08.01.00**, using Studio **02.08.02.61**, a 0.4 mm nozzle and black PLA from AMS slot 2. The public refactor and generalized paths are validated with offline tests only. Other models/materials are **not hardware-qualified** by this project. A matching profile does not prove that a material is appropriate for the machine, enclosure, nozzle or AMS. This is not an official Bambu Lab SDK or product.
-
-## Install
-
-Python 3.11+ is required. Run these commands in a cloned checkout:
+## 安装与配置
 
 ```powershell
 py -3 -m venv .venv
@@ -33,13 +25,7 @@ py -3 -m venv .venv
 .\.venv\Scripts\bambu-lan.exe --help
 ```
 
-The main entry point is `bambu-lan`. The legacy `bambu-a1` command and `python -m bambu_a1` remain available. The commands below assume the virtual environment is active or its executable directory is on PATH.
-
-## Configure one printer
-
-Runtime files still default to `%LOCALAPPDATA%/BambuA1Cli` on Windows for compatibility. `BAMBU_LAN_HOME` selects another private directory (`BAMBU_A1_HOME` is the fallback alias); set it before starting the CLI. Do not put it inside your checkout. Each directory is bound to one printer. The CLI does not reuse any machine's private prototype state automatically.
-
-Obtain the printer CA bundle from a trusted source and verify its provenance. It is a public certificate bundle, not a private key. This repository intentionally does not distribute vendor binaries, credentials or CA bundles. The [ha-bambulab public CA reference](https://github.com/greghesp/ha-bambulab/blob/main/custom_components/bambu_lab/pybambu/certs/bambu.cert) is one research source; verify it is appropriate for your device. An application CA bundle can be supplied separately with `--app-ca-file`.
+主命令为 `bambu-lan`，保留旧命令 `bambu-a1` 和 `python -m bambu_a1` 兼容入口。
 
 ```powershell
 bambu-lan init --host 192.0.2.10 --serial YOURPRINTERSERIAL --ca-file C:/private/printer-ca.pem --studio-config C:/path/to/BambuStudio.conf --studio-exe 'C:/Program Files/Bambu Studio/bambu-studio.exe' --profile C:/private/machine-full-profile.json
@@ -47,13 +33,15 @@ bambu-lan status
 bambu-lan camera --out C:/private/bed.jpg
 ```
 
-Replace the documentation-only IP and all paths. `init` refuses to overwrite existing configuration. `studio-config` is optional: alternatively provide the access code through the environment variable named by `--access-code-env` (default `BAMBU_A1_ACCESS_CODE`), using your secret manager. There is no access-code command-line argument. The Studio reader only selects the access code for the configured serial; it does not read or reuse cloud login tokens.
+示例 IP 是文档占位地址，路径及序列号须自行替换。CA 应来自可信来源；TLS 始终检查证书链及设备序列号主机名。可以用 `--app-ca-file` 指定独立的应用证书根。`--studio-config` 可省略，改由秘密管理工具设置 `BAMBU_A1_ACCESS_CODE` 环境变量。命令行不接收明文访问码。
 
-The full profile can be exported from a correctly configured project: `Metadata/project_settings.config` inside its 3MF. It must contain resolved start/end G-code; an inheritance-only preset is insufficient. No default temperatures or private profiles are bundled.
+为兼容已有安装，配置和运行记录仍默认在 `%LOCALAPPDATA%/BambuA1Cli`；可设置 `BAMBU_LAN_HOME` 使用其他私有目录，兼容旧变量 `BAMBU_A1_HOME`。不要放进 Git 仓库。`init` 不覆盖旧配置，程序也不会自动读取作者的私有原型目录。DPAPI 通常绑定 Windows 用户与机器，不能把加密文件同步后当作跨机可用凭据。
 
-`init --profile` provides both the slicing default and the independently selected target machine. To select/change the target on an existing installation, use `bambu-lan configure-machine --profile C:/private/machine-full-profile.json`. This changes local configuration only. It does not change printer accessories or the default slicing material. Preflight compares the job's model, nozzle and build volume with that target and the live nozzle diameter. Machine identity comes from the operator's profile; it is not an automatic model discovery claim. TLS separately authenticates the configured device serial. Missing required telemetry blocks sending.
+切片使用目标机器完整、已展开的 Studio 配置，可从正确设置的 3MF 中提取 `Metadata/project_settings.config`。仓库不附带温度、个人耗材配置或模型。更换材料时应提供对应材料的完整配置，不会回退到 PLA 温度。
 
-## Inspect and slice
+`init --profile` 同时设置默认切片配置和目标机器。已有安装可以运行 `bambu-lan configure-machine --profile C:/private/machine-full-profile.json`，只更新本地目标机器配置。预检会核对切片与目标的型号、喷嘴、打印范围及高度，并读取设备喷嘴直径；型号依据用户配置，不冒充设备自动识别结果。TLS 另行验证设备序列号。更改目标配置不会自动更换默认切片材料。
+
+## 检查和打印
 
 ```powershell
 bambu-lan inspect --file C:/prints/part.gcode.3mf
@@ -61,55 +49,41 @@ bambu-lan slice --model C:/prints/part.stl --out C:/prints/part.gcode.3mf --prof
 bambu-lan preflight --file C:/prints/part.gcode.3mf --slot 2
 ```
 
-Slicing preserves model scale/orientation and arranges it centrally. `--overrides` accepts a JSON file containing process/color fields listed in `a1.slice_model`. Inspection validates archive and metadata consistency, checksums and reported bounds; it is **not a G-code motion simulator or a guarantee of safe geometry**.
-
-Choose `--ams-id` using the IDs returned by `status`; `--slot` is 1-based within that unit (default unit 0). Four-slot protocol unit IDs 0–25 and single-slot HT IDs 128–135 are accepted only when the requested tray is reported. This range describes encoding, not the number of units a particular printer can connect. For example:
-
-```powershell
-bambu-lan preflight --file C:/prints/petg.gcode.3mf --ams-id 1 --slot 2
-bambu-lan preflight --file C:/prints/tpu.gcode.3mf --external
-```
-
-The selected AMS or external tray's reported material must exactly match the slice. Configure external-spool material on the printer before using `--external`. There is no PLA temperature fallback: temperatures remain those of the selected slicing profile. The CLI does not determine every material/feed-path compatibility combination; select the appropriate profile and hardware.
-
-## Prepare, review, send once
-
-First complete the [credential setup](docs/credentials.md). Check the physical build plate, filament and bed. Preparation does not send a print:
+完成 [凭据配置](docs/credentials.md) 后：
 
 ```powershell
 bambu-lan prepare-print --file C:/prints/part.gcode.3mf --slot 2 --label 'Reviewed part'
-```
-
-Actually inspect the returned `camera.file`. The hash identifies that image; passing it does not itself perform visual review. Under authorization for this specific job, dispatch within five minutes:
-
-```powershell
+# 实际查看返回的床面图片，核对材料、打印板和本盘授权；在 5 分钟内发送。
 bambu-lan dispatch --job-id RETURNED_JOB_ID --reviewed-bed-sha256 REVIEWED_IMAGE_SHA256
 bambu-lan job-status --job-id RETURNED_JOB_ID
 ```
 
-Use `--external` instead of `--slot` for an external spool, or add `--ams-id` for another unit. Flow and vibration calibration default to off; opt in with `--flow-calibration` and `--vibration-calibration` when supported by the machine/material. Bed leveling remains enabled.
+`--ams-id` 使用 `status` 返回的单元 ID，默认 0；`--slot` 从 1 开始。支持四槽单元协议 ID 0–25、HT 单槽 ID 128–135，且必须能读到实际槽位；该范围不是每台机器可连接的单元数量。外置料架用 `--external` 代替槽位参数，并先在打印机设置其材料。例如：
 
-For a printer whose camera does not use TLS JPEG (for example X1), capture a fresh JPEG through an available camera path and supply `--bed-image C:/private/fresh-bed.jpg` to `prepare-print`. Actually verify that it shows this printer's current bed. File mtime is used as the capture-time proxy and cannot prove freshness or device identity; it must not be refreshed to reuse an old image. Both preparation and image must remain within five minutes through dispatch. The source's original age is preserved when copied.
+```powershell
+bambu-lan preflight --file C:/prints/petg.gcode.3mf --ams-id 1 --slot 2
+bambu-lan prepare-print --file C:/prints/tpu.gcode.3mf --external --bed-image C:/private/fresh-bed.jpg
+```
 
-Dispatch rechecks the file, target profile, live printer and selected filament; uploads a unique filename through FTPS; reads back identical bytes; records a receipt; and sends one signed request. A changed machine or route requires preparation again. It then independently checks the unique filename and active state. ACK success alone does not prove that the correct job started.
+不限制 PLA 不代表任意材料适合任意机器。应选择适合机器、喷嘴、打印板及送料方式的材料配置；程序保留材料名称的严格匹配，但不会判定所有耗材与硬件的适用性。流量和振动校准默认关闭，可在准备时显式加 `--flow-calibration`、`--vibration-calibration`；调平保持开启。
 
-- A receipt blocks a second send, including after timeouts. Never delete it or create another job to bypass an uncertain outcome; inspect live state first.
-- The same local runtime directory serializes dispatch and sequence allocation. Locks do not coordinate different computers or different runtime directories. Use one execution host per printer.
-- Errors/HMS messages and changed materials are not ignored. Do not weaken checks to force a job through.
-- Exit codes: `0` completed CLI operation; `1` exception/configuration failure; `2` failed preflight; `3` dispatch outcome not confirmed. An error after sending does **not** prove that printing did not start.
-- `monitor --seconds 45 --interval 10` is bounded polling, not an installed background service.
+对于 X1 等未实现内置抓图的相机接口，可用 `--bed-image` 提供这台机器的新拍 JPEG。仍需实际查看照片，文件修改时间只作为拍摄时间的近似，不能证明照片来自当前设备或确实是新拍的。程序保留原照片时间，照片与准备操作在发送时都必须未超过 5 分钟，不能通过刷新时间复用旧图。
 
-## Upgrading from 0.1
+程序重新核对文件、目标机器、状态和选定耗材，上传唯一文件并逐字节回读，保存回执后只发一次。型号或路由变化需要重新准备。已有回执时拒绝重发；超时先查看状态，不能删回执或另建任务绕过检查。任务归属按唯一文件名核对，不用可重复的任务名称冒充启动证明。
 
-Install the new `bambu-lan-cli` distribution in a fresh virtual environment (or uninstall `bambu-a1-cli` first, since both distributions share the compatibility package). Existing public-project configuration, DPAPI identity and receipt history remain in the same runtime directory. Configure a target profile if it was previously omitted. Version 0.1 prepared manifests cannot be dispatched by 0.2; inspect existing receipts/status and prepare a fresh reviewed job only when appropriate. Never delete receipt history to force a resend.
+当前文件检查核验归档、元数据和边界，不是运动仿真。床面图的 SHA256 只能记录查看的是哪张图，不能自动判断床面是否清空。程序不会自行清理热床。
 
-## Development
+每台打印机应由一个执行端调度；当前锁只能保护同一台电脑的同一运行目录。远程 API、SSH 网关和跨机队列未实现。
+
+## 开发和许可证
+
+从 0.1 升级时建议新建虚拟环境安装 `bambu-lan-cli`，或先卸载旧发行包 `bambu-a1-cli`，避免两个发行包共用 Python 包目录。运行目录、凭据和历史回执保留。未配置目标机器的旧安装需补充配置；0.1 已准备的任务不能直接用 0.2 发送，应先核对原任务状态与回执，再按需重新准备，不能清除回执强行重发。
 
 ```powershell
 python -m pip install -e .
 python -m unittest discover -s tests -v
 ```
 
-Tests create ephemeral synthetic keys, certificates, archives and fake transports. They never print, contact a printer, read a developer's credentials or require GitHub secrets. Windows CI exercises DPAPI and locking; Ubuntu CI exercises the portable subset and skips Windows-only tests.
+测试使用临时合成数据，不连接打印机、不读取私人凭据、不启动打印。GitHub Actions 在 Windows 及 Ubuntu 上运行相应测试；Windows 专属测试在 Ubuntu 跳过。
 
-See [protocol notes](docs/protocol.md), [security reporting](SECURITY.md) and [contribution notes](CONTRIBUTING.md). Licensed under **AGPL-3.0-or-later**; attribution and source provenance are in [NOTICE.md](NOTICE.md).
+项目采用 **AGPL-3.0-or-later**，详见 [LICENSE](LICENSE) 和 [来源说明](NOTICE.md)。这是非官方项目；固件、凭据和信任状态变化可能需要重新适配。
