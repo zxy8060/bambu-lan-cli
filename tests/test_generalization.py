@@ -224,6 +224,38 @@ class GeneralizationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             a1_print.capture_bed(self.root / "copy.jpg", source)
 
+    def test_small_future_file_timestamp_is_clamped(self):
+        source = self.root / "fresh.jpg"
+        source.write_bytes(b"\xff\xd8synthetic-jpeg\xff\xd9")
+        now = time.time()
+        os.utime(source, (now + 0.01, now + 0.01))
+        with patch.object(a1_print.time, "time", return_value=now):
+            _, captured_at = a1_print.capture_bed(self.root / "copy.jpg", source)
+            self.assertEqual(captured_at, now)
+            self.assertTrue(
+                a1_print.review_is_fresh(
+                    {"prepared_at": now, "bed_captured_at": captured_at}
+                )
+            )
+
+    def test_genuinely_future_file_timestamp_is_rejected(self):
+        source = self.root / "future.jpg"
+        source.write_bytes(b"\xff\xd8synthetic-jpeg\xff\xd9")
+        now = time.time()
+        os.utime(source, (now + 10, now + 10))
+        with patch.object(a1_print.time, "time", return_value=now):
+            with self.assertRaises(ValueError):
+                a1_print.capture_bed(self.root / "copy.jpg", source)
+
+    def test_future_rounding_tolerance_does_not_extend_old_photo_limit(self):
+        source = self.root / "stale.jpg"
+        source.write_bytes(b"\xff\xd8synthetic-jpeg\xff\xd9")
+        now = time.time()
+        os.utime(source, (now - 300.01, now - 300.01))
+        with patch.object(a1_print.time, "time", return_value=now):
+            with self.assertRaises(ValueError):
+                a1_print.capture_bed(self.root / "copy.jpg", source)
+
     def test_configure_machine_preserves_other_settings(self):
         cfg = dict(self.cfg, serial="OFFLINETEST", host="192.0.2.10")
         path = self.root / "config.json"

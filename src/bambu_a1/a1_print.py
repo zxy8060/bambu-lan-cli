@@ -159,7 +159,11 @@ def capture_bed(destination, supplied=None, cfg=None):
         stat = os.fstat(stream.fileno())
         if not 4 <= stat.st_size <= 10_000_000:
             raise ValueError("Bed JPEG must be between 4 bytes and 10 MB")
-        if not 0 <= time.time() - stat.st_mtime <= 300:
+        now = time.time()
+        # Windows Python <3.13 uses a coarser wall clock than file timestamps.
+        # Small future rounding is allowed, then clamped so it cannot extend
+        # the review window. The 300-second limit for old images is unchanged.
+        if not -0.1 <= now - stat.st_mtime <= 300:
             raise ValueError("Bed image must be freshly captured within 5 minutes")
         jpeg = stream.read()
     if not jpeg.startswith(b"\xff\xd8") or not jpeg.endswith(b"\xff\xd9"):
@@ -171,7 +175,7 @@ def capture_bed(destination, supplied=None, cfg=None):
         "source": "operator-supplied",
         "capture_time_source": "file mtime",
         "requires_review": "Confirm this is a fresh photo of the configured printer",
-    }, stat.st_mtime
+    }, min(stat.st_mtime, now)
 
 
 def fresh_preflight(manifest):
