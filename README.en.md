@@ -2,7 +2,7 @@
 
 [简体中文](README.md)
 
-An independent, experimental Python CLI for profile-driven Bambu slicing, LAN monitoring and reviewed signed print dispatch. Model, nozzle diameter and build volume come from a resolved machine profile. There is no PLA-only material restriction. Existing cloud and Handy settings are left unchanged. No desktop automation or WSL is used.
+An experimental Python CLI for Bambu printers, providing sliced-file inspection, Bambu Studio command-line slicing, LAN status monitoring and print dispatch. Jobs can use an AMS or external spool, with device preflight checks and operator review of the bed before sending.
 
 **Signing credentials are not included or extracted by this project.** Signed dispatch requires an authorized RSA application identity that the printer already trusts. Installing this repository alone does not enable signed printing. See [credential requirements](docs/credentials.md).
 
@@ -16,12 +16,13 @@ An independent, experimental Python CLI for profile-driven Bambu slicing, LAN mo
 | Camera | TLS JPEG transport (A1/P1); fresh operator-supplied JPEG alternative; built-in RTSPS capture not implemented |
 | Signed dispatch | Windows, matching machine profile and live nozzle/material, trusted signing identity, compatible firmware |
 | Filament source | Explicit AMS unit/slot, AMS HT single slot, or external spool; one material per job |
-| Materials | No whitelist: PETG, ABS, ASA, TPU, etc. require an appropriate machine/filament profile and feed path |
+| Materials | Type and temperatures come from the slicing profile; the selected tray's reported material must match the slice |
 | Other operating systems | Offline inspection/tests supported; no portable credential store or signed dispatcher yet |
 | Cloud sending / multi-host scheduler | Not implemented |
+| Cloud / Handy settings | LAN connections preserve the printer's existing settings |
 | Dual-nozzle / multicolor / mixed AMS routing | Not implemented; dual-nozzle profiles and multi-material plates are rejected |
 
-The originating private prototype started a real A1 print on firmware **01.08.01.00**, using Studio **02.08.02.61**, a 0.4 mm nozzle and black PLA from AMS slot 2. The public refactor and generalized paths are validated with offline tests only. Other models/materials are **not hardware-qualified** by this project. A matching profile does not prove that a material is appropriate for the machine, enclosure, nozzle or AMS. This is not an official Bambu Lab SDK or product.
+The public version is validated with offline tests. Printer, firmware and material combinations have not been comprehensively tested on hardware. The recorded hardware test used an A1 research prototype; its configuration and results are documented in the [protocol and validation notes](docs/protocol.md). Missing required telemetry or incompatible signing protocols block dispatch. This is not an official Bambu Lab SDK or product.
 
 ## Install
 
@@ -33,11 +34,11 @@ py -3 -m venv .venv
 .\.venv\Scripts\bambu-lan.exe --help
 ```
 
-The main entry point is `bambu-lan`. The legacy `bambu-a1` command and `python -m bambu_a1` remain available. The commands below assume the virtual environment is active or its executable directory is on PATH.
+The main entry point is `bambu-lan`; `bambu-a1` and `python -m bambu_a1` are aliases. The commands below assume the virtual environment is active or its executable directory is on PATH.
 
 ## Configure one printer
 
-Runtime files still default to `%LOCALAPPDATA%/BambuA1Cli` on Windows for compatibility. `BAMBU_LAN_HOME` selects another private directory (`BAMBU_A1_HOME` is the fallback alias); set it before starting the CLI. Do not put it inside your checkout. Each directory is bound to one printer. The CLI does not reuse any machine's private prototype state automatically.
+Runtime files default to `%LOCALAPPDATA%/BambuA1Cli` on Windows. `BAMBU_LAN_HOME` selects another private directory (`BAMBU_A1_HOME` is the fallback alias); set it before starting the CLI. Keep this directory outside your checkout. Each directory is bound to one printer.
 
 Obtain the printer CA bundle from a trusted source and verify its provenance. It is a public certificate bundle, not a private key. This repository intentionally does not distribute vendor binaries, credentials or CA bundles. The [ha-bambulab public CA reference](https://github.com/greghesp/ha-bambulab/blob/main/custom_components/bambu_lab/pybambu/certs/bambu.cert) is one research source; verify it is appropriate for your device. An application CA bundle can be supplied separately with `--app-ca-file`.
 
@@ -49,9 +50,9 @@ bambu-lan camera --out C:/private/bed.jpg
 
 Replace the documentation-only IP and all paths. `init` refuses to overwrite existing configuration. `studio-config` is optional: alternatively provide the access code through the environment variable named by `--access-code-env` (default `BAMBU_A1_ACCESS_CODE`), using your secret manager. There is no access-code command-line argument. The Studio reader only selects the access code for the configured serial; it does not read or reuse cloud login tokens.
 
-The full profile can be exported from a correctly configured project: `Metadata/project_settings.config` inside its 3MF. It must contain resolved start/end G-code; an inheritance-only preset is insufficient. No default temperatures or private profiles are bundled.
+Supply a complete Studio profile for the target machine and filament: `Metadata/project_settings.config` inside a correctly configured 3MF. It must contain resolved start/end G-code; an inheritance-only preset is insufficient. Temperatures and other print parameters come from this profile. Select the corresponding profile when changing materials.
 
-`init --profile` provides both the slicing default and the independently selected target machine. To select/change the target on an existing installation, use `bambu-lan configure-machine --profile C:/private/machine-full-profile.json`. This changes local configuration only. It does not change printer accessories or the default slicing material. Preflight compares the job's model, nozzle and build volume with that target and the live nozzle diameter. Machine identity comes from the operator's profile; it is not an automatic model discovery claim. TLS separately authenticates the configured device serial. Missing required telemetry blocks sending.
+`init --profile` provides both the slicing default and the independently selected target machine. Use `bambu-lan configure-machine --profile C:/private/machine-full-profile.json` to update the local target configuration. Preflight compares the job's model, nozzle and build volume with that target and the live nozzle diameter. The operator configures the target model; TLS authenticates the device serial. Printer accessories and the default slicing material are configured separately.
 
 ## Inspect and slice
 
@@ -70,7 +71,7 @@ bambu-lan preflight --file C:/prints/petg.gcode.3mf --ams-id 1 --slot 2
 bambu-lan preflight --file C:/prints/tpu.gcode.3mf --external
 ```
 
-The selected AMS or external tray's reported material must exactly match the slice. Configure external-spool material on the printer before using `--external`. There is no PLA temperature fallback: temperatures remain those of the selected slicing profile. The CLI does not determine every material/feed-path compatibility combination; select the appropriate profile and hardware.
+The selected AMS or external tray's reported material must exactly match the slice. Configure external-spool material on the printer before using `--external`. Choose filament and a profile appropriate for the machine, nozzle, build plate and feed path. Material-name matching checks the recorded values; the operator must confirm hardware compatibility.
 
 ## Prepare, review, send once
 
